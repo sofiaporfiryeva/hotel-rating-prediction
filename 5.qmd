@@ -1,0 +1,190 @@
+---
+title: "Прогнозирование рейтинга отеля"
+author: "Sonja"
+date: "2025-04-25"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+\
+
+# начало
+
+```{r}
+rm(list = ls())
+set.seed(1)
+
+# пакеты
+library(tidyverse)
+library(tidymodels)
+library(textrecipes)
+```
+
+# чтение данных
+
+```{r}
+
+hotels <- read_csv("/Users/sonja/Downloads/tripadvisor_hotel_reviews.csv")
+
+hotels <- sample_frac(hotels, 0.3)
+
+glimpse(hotels)
+```
+
+# тренировка и тест
+
+```{r}
+
+split      <- initial_split(hotels, prop = 0.8, strata = Rating)
+train_data <- training(split)
+test_data  <- testing(split)
+```
+
+# рецепт № 1
+
+```{r}
+hotel_recipe <- 
+  recipe(Rating ~ Review, data = train_data) %>%
+  step_tokenize(Review) %>%                         
+  step_tokenfilter(Review, max_tokens = 1000) %>%   
+  step_tfidf(Review) %>%                            
+  step_normalize(all_predictors())                 
+
+hotel_recipe
+```
+
+# xgboost
+
+```{r}
+xgb_spec <- 
+  boost_tree(
+    mtry   = 50,       # количество признаков на сплит
+    trees  = 100,      # число деревьев
+    mode   = "regression"
+  ) %>%
+  set_engine("xgboost")
+```
+
+# workflow
+
+```{r}
+hotel_wf <- 
+  workflow() %>%
+  add_recipe(hotel_recipe) %>%
+  add_model(xgb_spec)
+
+
+hotel_fit <- fit(hotel_wf, data = train_data)
+```
+
+# предсказание
+
+```{r}
+preds <- 
+  predict(hotel_fit, test_data) %>%
+  bind_cols(test_data)
+preds %>%
+  metrics(truth = Rating, estimate = .pred) %>%
+  filter(.metric %in% c("rmse", "rsq", "mae"))
+```
+
+# baseline
+
+```{r}
+null_spec <- 
+  null_model() %>%
+  set_engine("parsnip") %>%
+  set_mode("regression")
+
+null_wf <- 
+  workflow() %>%
+  add_model(null_spec) %>%
+  add_formula(Rating ~ Review)
+
+# предскзаание
+null_fit   <- fit(null_wf, data = train_data)
+null_preds <- predict(null_fit, test_data) %>% bind_cols(test_data)
+
+null_preds %>%
+  metrics(truth = Rating, estimate = .pred) %>%
+  filter(.metric %in% c("rmse", "rsq", "mae"))
+```
+
+# сравнение
+
+```{}
+```
+
+# Рецепт с биграммами
+
+```{r}
+hotel_recipe_ngram <- 
+  recipe(Rating ~ Review, data = train_data) %>%
+  step_tokenize(Review) %>%
+  step_ngram(Review, num_tokens = 2, min_num_tokens = 1) %>%
+  step_tokenfilter(Review, max_tokens = 2000) %>%
+  step_tfidf(Review) %>%
+  step_normalize(all_predictors())
+
+hotel_recipe_ngram
+```
+
+# Обучение модели с биграммами и оценка
+
+```{r}
+hotel_wf_ngram <- 
+  workflow() %>%
+  add_recipe(hotel_recipe_ngram) %>%
+  add_model(xgb_spec)
+
+hotel_fit_ngram <- fit(hotel_wf_ngram, data = train_data)
+
+preds_ngram <- 
+  predict(hotel_fit_ngram, test_data) %>%
+  bind_cols(test_data)
+
+preds_ngram %>%
+  metrics(truth = Rating, estimate = .pred) %>%
+  filter(.metric %in% c("rmse", "rsq", "mae"))
+```
+
+# сравнение
+
+```{r comparison-table, echo=FALSE}
+
+library(dplyr)
+library(tidyr)
+library(tidymodels)
+
+get_metrics <- function(data, name) {
+  data %>%
+    metrics(truth = Rating, estimate = .pred) %>%
+    filter(.metric %in% c("rmse", "rsq", "mae")) %>%
+    mutate(model = name)
+}
+
+null_metrics  <- get_metrics(null_preds,    "null")
+xgb_metrics   <- get_metrics(preds,         "xgboost_uni")
+ngram_metrics <- get_metrics(preds_ngram,   "xgboost_bi")
+
+comparison_table <- 
+  bind_rows(null_metrics, xgb_metrics, ngram_metrics) %>%
+  select(model, .metric, .estimate) %>%
+  pivot_wider(
+    names_from  = .metric,
+    values_from = .estimate
+  )
+
+# таблица
+comparison_table
+
+```
+
+# конец
+
